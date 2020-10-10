@@ -41,6 +41,9 @@ import (
 
 const (
 	loadDomainEntryForTaskRetryDelay = 100 * time.Millisecond
+
+	activeTaskHighQueueLatencyThreshold  = 30 * time.Second
+	standbyTaskHighQueueLatencyThreshold = 1 * time.Hour
 )
 
 var (
@@ -350,7 +353,12 @@ func (t *taskBase) Ack() {
 	if t.shouldProcessTask {
 		t.scope.RecordTimer(metrics.TaskAttemptTimerPerDomain, time.Duration(t.attempt))
 		t.scope.RecordTimer(metrics.TaskLatencyPerDomain, time.Since(t.submitTime))
-		t.scope.RecordTimer(metrics.TaskQueueLatencyPerDomain, time.Since(t.GetVisibilityTimestamp()))
+
+		taskQueueLatency := time.Since(t.GetVisibilityTimestamp())
+		t.scope.RecordTimer(metrics.TaskQueueLatencyPerDomain, taskQueueLatency)
+		if t.isTaskQueueLatencyTooHigh(taskQueueLatency) {
+			t.logger.Warn("High task Queue latency", tag.TaskQueueLatency(taskQueueLatency))
+		}
 	}
 }
 
@@ -397,6 +405,22 @@ func (t *taskBase) GetAttempt() int {
 
 func (t *taskBase) GetQueueType() QueueType {
 	return t.queueType
+}
+
+func (t *taskBase) isTaskQueueLatencyTooHigh(
+	queueLatency time.Duration,
+) bool {
+	if (t.queueType == QueueTypeActiveTimer || t.queueType == QueueTypeActiveTransfer) &&
+		queueLatency > activeTaskHighQueueLatencyThreshold {
+		return true
+	}
+
+	if (t.queueType == QueueTypeStandbyTimer || t.queueType == QueueTypeStandbyTransfer) &&
+		queueLatency > standbyTaskHighQueueLatencyThreshold {
+		return true
+	}
+
+	return false
 }
 
 // GetOrCreateDomainTaggedScope returns cached domain-tagged metrics scope if exists

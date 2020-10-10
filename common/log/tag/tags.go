@@ -495,6 +495,11 @@ func TaskVisibilityTimestamp(timestamp int64) Tag {
 	return newInt64("queue-task-visibility-timestamp", timestamp)
 }
 
+// TaskQueueLatency returns tag for task queue latency
+func TaskQueueLatency(latency time.Duration) Tag {
+	return newDurationTag("task-queue-latency", latency)
+}
+
 // NumberProcessed returns tag for NumberProcessed
 func NumberProcessed(n int) Tag {
 	return newInt("number-processed", n)
