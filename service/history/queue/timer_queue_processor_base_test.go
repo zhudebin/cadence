@@ -808,7 +808,7 @@ func (s *timerQueueProcessorBaseSuite) newTestTimerQueueProcessorBase(
 		s.mockShard,
 		processingQueueStates,
 		s.mockTaskProcessor,
-		NewLocalTimerGate(s.mockShard.GetTimeSource()),
+		NewLocalTimerGate(s.mockShard.GetTimeSource(), metrics.NoopScope(metrics.History)),
 		newTimerQueueProcessorOptions(s.mockShard.GetConfig(), true, false),
 		updateMaxReadLevel,
 		updateClusterAckLevel,

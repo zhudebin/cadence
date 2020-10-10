@@ -125,7 +125,7 @@ func newTransferQueueProcessorBase(
 
 		notifyCh:      make(chan struct{}, 1),
 		nextPollTime:  make(map[int]pollTime),
-		nextPollTimer: NewLocalTimerGate(shard.GetTimeSource()),
+		nextPollTimer: NewLocalTimerGate(shard.GetTimeSource(), metricsClient.Scope(options.MetricScope)),
 
 		lastSplitTime:    time.Time{},
 		lastMaxReadLevel: 0,
