@@ -77,6 +77,8 @@ type (
 		newTimeLock sync.Mutex
 		newTime     time.Time
 
+		lastPollTime time.Time
+
 		processingQueueReadProgress map[int]timeTaskReadProgress
 	}
 )
@@ -140,6 +142,8 @@ func newTimerQueueProcessorBase(
 		timerGate:    timerGate,
 
 		newTimerCh: make(chan struct{}, 1),
+
+		lastPollTime: shard.GetTimeSource().Now(),
 
 		processingQueueReadProgress: make(map[int]timeTaskReadProgress),
 	}
@@ -328,6 +332,10 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 			t.upsertPollTime(level, time.Time{}) // re-enqueue the event
 			continue
 		}
+
+		pollTime := t.shard.GetTimeSource().Now()
+		t.metricsScope.RecordTimer(metrics.ProcessingQueuePollInterval, pollTime.Sub(t.lastPollTime))
+		t.lastPollTime = pollTime
 
 		// TODO: consider remove max poll interval
 		t.upsertPollTime(level, t.shard.GetCurrentTime(t.clusterName).Add(backoff.JitDuration(

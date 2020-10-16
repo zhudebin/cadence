@@ -70,6 +70,8 @@ type (
 		lastSplitTime           time.Time
 		lastMaxReadLevel        int64
 		estimatedTasksPerMinute int64
+
+		lastPollTime time.Time
 	}
 )
 
@@ -129,6 +131,8 @@ func newTransferQueueProcessorBase(
 
 		lastSplitTime:    time.Time{},
 		lastMaxReadLevel: 0,
+
+		lastPollTime: shard.GetTimeSource().Now(),
 	}
 }
 
@@ -320,6 +324,9 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 		}
 
 		pollTime := t.shard.GetTimeSource().Now()
+		t.metricsScope.RecordTimer(metrics.ProcessingQueuePollInterval, pollTime.Sub(t.lastPollTime))
+		t.lastPollTime = pollTime
+
 		// TODO: consider remove max poll interval
 		t.upsertPollTime(level, pollTime.Add(backoff.JitDuration(
 			t.options.MaxPollInterval(),
