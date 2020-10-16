@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/uber/cadence/common/clock"
-	"github.com/uber/cadence/common/metrics"
 )
 
 type (
@@ -89,10 +88,7 @@ type (
 )
 
 // NewLocalTimerGate create a new timer gate instance
-func NewLocalTimerGate(
-	timeSource clock.TimeSource,
-	scope metrics.Scope,
-) LocalTimerGate {
+func NewLocalTimerGate(timeSource clock.TimeSource) LocalTimerGate {
 	timer := &LocalTimerGateImpl{
 		timer:          time.NewTimer(0),
 		nextWakeupTime: time.Time{},
@@ -113,10 +109,6 @@ func NewLocalTimerGate(
 		for {
 			select {
 			case <-timer.timer.C:
-				if !timer.nextWakeupTime.IsZero() {
-					scope.RecordTimer(metrics.TimerGateLatency, timer.timeSource.Now().Sub(timer.nextWakeupTime))
-				}
-
 				select {
 				// re-transmit on gateC
 				case timer.fireChan <- struct{}{}:
@@ -148,9 +140,6 @@ func (timerGate *LocalTimerGateImpl) FireAfter(now time.Time) bool {
 func (timerGate *LocalTimerGateImpl) Update(nextTime time.Time) bool {
 	// NOTE: negative duration will make the timer fire immediately
 	now := timerGate.timeSource.Now()
-	if nextTime.IsZero() {
-		nextTime = now
-	}
 
 	if timerGate.timer.Stop() && timerGate.nextWakeupTime.Before(nextTime) {
 		// this means the timer, before stopped, is active && next wake up time do not have to be updated

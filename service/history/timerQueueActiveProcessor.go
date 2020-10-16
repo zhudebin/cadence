@@ -99,7 +99,6 @@ func newTimerQueueActiveProcessor(
 		),
 	}
 
-	metricsScope := shard.GetMetricsClient().Scope(metrics.TimerActiveQueueProcessorScope)
 	processor.timerQueueProcessorBase = newTimerQueueProcessorBase(
 		metrics.TimerActiveQueueProcessorScope,
 		shard,
@@ -109,10 +108,10 @@ func newTimerQueueActiveProcessor(
 		timerQueueAckMgr,
 		timerTaskFilter,
 		processor.taskExecutor,
-		queue.NewLocalTimerGate(shard.GetTimeSource(), metricsScope),
+		queue.NewLocalTimerGate(shard.GetTimeSource()),
 		shard.GetConfig().TimerProcessorMaxPollRPS,
 		logger,
-		metricsScope,
+		shard.GetMetricsClient().Scope(metrics.TimerActiveQueueProcessorScope),
 	)
 
 	return processor
@@ -195,7 +194,6 @@ func newTimerQueueFailoverProcessor(
 		),
 	}
 
-	metricsScope := shard.GetMetricsClient().Scope(metrics.TimerActiveQueueProcessorScope)
 	processor.timerQueueProcessorBase = newTimerQueueProcessorBase(
 		metrics.TimerActiveQueueProcessorScope,
 		shard,
@@ -205,10 +203,10 @@ func newTimerQueueFailoverProcessor(
 		timerQueueAckMgr,
 		timerTaskFilter,
 		processor.taskExecutor,
-		queue.NewLocalTimerGate(shard.GetTimeSource(), metricsScope),
+		queue.NewLocalTimerGate(shard.GetTimeSource()),
 		shard.GetConfig().TimerProcessorFailoverMaxPollRPS,
 		logger,
-		metricsScope,
+		shard.GetMetricsClient().Scope(metrics.TimerActiveQueueProcessorScope),
 	)
 
 	return updateShardAckLevel, processor
