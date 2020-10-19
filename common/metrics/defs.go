@@ -1750,6 +1750,7 @@ const (
 	ProcessingQueueRandomSplitCounter
 	ProcessingQueueThrottledCounter
 	ProcessingQueuePollInterval
+	ProcessingQueueTimerGateLatency
 
 	ActivityE2ELatency
 	ActiveClusterGauge
@@ -2221,6 +2222,7 @@ var MetricDefs = map[ServiceIdx]map[int]metricDefinition{
 		ProcessingQueueRandomSplitCounter:                 {metricName: "processing_queue_random_split_counter", metricType: Counter},
 		ProcessingQueueThrottledCounter:                   {metricName: "processing_queue_throttled_counter", metricType: Counter},
 		ProcessingQueuePollInterval:                       {metricName: "processing_queue_poll_interval", metricType: Counter},
+		ProcessingQueueTimerGateLatency:                   {metricName: "processing_queue_timer_gate_latency", metricType: Timer},
 		ActivityE2ELatency:                                {metricName: "activity_end_to_end_latency", metricType: Timer},
 		AckLevelUpdateCounter:                             {metricName: "ack_level_update", metricType: Counter},
 		AckLevelUpdateFailedCounter:                       {metricName: "ack_level_update_failed", metricType: Counter},

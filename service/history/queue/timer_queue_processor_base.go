@@ -190,6 +190,15 @@ func (t *timerQueueProcessorBase) Stop() {
 	t.redispatcher.Stop()
 }
 
+func (t *timerQueueProcessorBase) emitDebugLogForActiveProcessor(
+	msg string, tags ...tag.Tag,
+) {
+	if t.options.MetricScope == metrics.TimerActiveQueueProcessorScope &&
+		t.updateProcessingQueueStates != nil {
+		t.logger.Info(msg, tags...)
+	}
+}
+
 func (t *timerQueueProcessorBase) processorPump() {
 	defer t.shutdownWG.Done()
 
@@ -232,14 +241,19 @@ processorPumpLoop:
 			t.pollTimeLock.Lock()
 			levels := make(map[int]struct{})
 			now := t.shard.GetCurrentTime(t.clusterName)
+			minPollTime := time.Unix(0, math.MaxInt64)
 			for level, pollTime := range t.nextPollTime {
 				if !now.Before(pollTime) {
 					levels[level] = struct{}{}
 					delete(t.nextPollTime, level)
+					if pollTime.Before(minPollTime) {
+						minPollTime = pollTime
+					}
 				} else {
 					t.timerGate.Update(pollTime)
 				}
 			}
+			t.metricsScope.RecordTimer(metrics.ProcessingQueueTimerGateLatency, now.Sub(minPollTime))
 			t.pollTimeLock.Unlock()
 
 			t.processQueueCollections(levels)
@@ -267,6 +281,8 @@ processorPumpLoop:
 			for _, queueCollection := range t.processingQueueCollections {
 				t.upsertPollTime(queueCollection.Level(), newTime)
 			}
+			t.emitDebugLogForActiveProcessor("Processed new task notification")
+
 		case <-splitQueueTimer.C:
 			t.splitQueue()
 			splitQueueTimer.Reset(backoff.JitDuration(
@@ -285,12 +301,14 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 		if _, ok := levels[level]; !ok {
 			continue
 		}
+		t.emitDebugLogForActiveProcessor("Processing queue collections")
 
 		activeQueue := queueCollection.ActiveQueue()
 		if activeQueue == nil {
 			// process for this queue collection has finished
 			// it's possible that new queue will be added to this collection later though,
 			// pollTime will be updated after split/merge
+			t.emitDebugLogForActiveProcessor("Active queue is nil")
 			continue
 		}
 
@@ -311,6 +329,7 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 		if !readLevel.Less(maxReadLevel) {
 			// notify timer gate about the min time
 			t.upsertPollTime(level, readLevel.(timerTaskKey).visibilityTimestamp)
+			t.emitDebugLogForActiveProcessor("Processing queue read level is greater or equal to max read level", tag.TaskVisibilityTimestamp(readLevel.(timerTaskKey).visibilityTimestamp.UnixNano()))
 			continue
 		}
 
@@ -371,6 +390,9 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 				// upsertPollTime whenever there are new tasks
 				t.upsertPollTime(level, lookAheadTask.VisibilityTimestamp)
 				newReadLevel = minTaskKey(newReadLevel, newTimerTaskKey(lookAheadTask.GetVisibilityTimestamp(), 0))
+				t.emitDebugLogForActiveProcessor("Processing queue waiting for look ahead time", tag.TaskVisibilityTimestamp(lookAheadTask.VisibilityTimestamp.UnixNano()))
+			} else {
+				t.emitDebugLogForActiveProcessor("Processing queue waiting for new task notification")
 			}
 			// else we have no idea when the next poll should happen
 			// rely on notifyNewTask to trigger the next poll even for non-default queue.
@@ -378,6 +400,7 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 		} else {
 			// more tasks should be loaded for this processing queue
 			// record the current progress and update the poll time
+			t.emitDebugLogForActiveProcessor("Processing queue has more task to process")
 			if level == defaultProcessingQueueLevel || !taskChFull {
 				t.upsertPollTime(level, time.Time{})
 			} else {
@@ -391,6 +414,8 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 			}
 			newReadLevel = newTimerTaskKey(timerTaskInfos[len(timerTaskInfos)-1].GetVisibilityTimestamp(), 0)
 		}
+		t.emitDebugLogForActiveProcessor("Processing queue update read level", tag.ReadLevel(newReadLevel.(timerTaskKey).visibilityTimestamp.UnixNano()))
+
 		queueCollection.AddTasks(tasks, newReadLevel)
 	}
 }
@@ -543,6 +568,8 @@ func (t *timerQueueProcessorBase) notifyNewTimer(
 
 	if t.newTime.IsZero() || newTime.Before(t.newTime) {
 		t.newTime = newTime
+		t.emitDebugLogForActiveProcessor("Received new task notification", tag.TaskVisibilityTimestamp(newTime.UnixNano()))
+
 		select {
 		case t.newTimerCh <- struct{}{}:
 			// Notified about new time.
@@ -553,6 +580,10 @@ func (t *timerQueueProcessorBase) notifyNewTimer(
 }
 
 func (t *timerQueueProcessorBase) upsertPollTime(level int, newPollTime time.Time) {
+	if newPollTime.IsZero() {
+		newPollTime = t.shard.GetTimeSource().Now()
+	}
+
 	t.pollTimeLock.Lock()
 	defer t.pollTimeLock.Unlock()
 
@@ -562,6 +593,7 @@ func (t *timerQueueProcessorBase) upsertPollTime(level int, newPollTime time.Tim
 	}
 
 	if currentPollTime, ok := t.nextPollTime[level]; !ok || newPollTime.Before(currentPollTime) {
+		t.emitDebugLogForActiveProcessor("Processing queue upsert poll time", tag.TaskVisibilityTimestamp(newPollTime.UnixNano()))
 		t.nextPollTime[level] = newPollTime
 		t.timerGate.Update(newPollTime)
 	}

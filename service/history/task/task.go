@@ -42,7 +42,7 @@ import (
 const (
 	loadDomainEntryForTaskRetryDelay = 100 * time.Millisecond
 
-	activeTaskHighQueueLatencyThreshold  = 2 * time.Minute
+	activeTaskHighQueueLatencyThreshold  = 30 * time.Second
 	standbyTaskHighQueueLatencyThreshold = 1 * time.Hour
 )
 

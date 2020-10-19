@@ -22,6 +22,7 @@ package queue
 
 import (
 	"context"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -172,7 +173,17 @@ func (t *transferQueueProcessorBase) Stop() {
 	t.redispatcher.Stop()
 }
 
+func (t *transferQueueProcessorBase) emitDebugLogForActiveProcessor(
+	msg string, tags ...tag.Tag,
+) {
+	if t.options.MetricScope == metrics.TransferActiveQueueProcessorScope &&
+		t.updateProcessingQueueStates != nil {
+		t.logger.Info(msg, tags...)
+	}
+}
+
 func (t *transferQueueProcessorBase) notifyNewTask() {
+	t.emitDebugLogForActiveProcessor("Received new task notification")
 	select {
 	case t.notifyCh <- struct{}{}:
 	default:
@@ -180,7 +191,11 @@ func (t *transferQueueProcessorBase) notifyNewTask() {
 }
 
 func (t *transferQueueProcessorBase) upsertPollTime(level int, newPollTime time.Time, changeable bool) {
+	if newPollTime.IsZero() {
+		newPollTime = t.shard.GetTimeSource().Now()
+	}
 	if currentPollTime, ok := t.nextPollTime[level]; !ok || (newPollTime.Before(currentPollTime.time) && currentPollTime.changeable) {
+		t.emitDebugLogForActiveProcessor("Processing queue upsert poll time", tag.TaskVisibilityTimestamp(newPollTime.UnixNano()))
 		t.nextPollTime[level] = pollTime{
 			time:       newPollTime,
 			changeable: changeable,
@@ -225,6 +240,8 @@ processorPumpLoop:
 			for _, queueCollection := range t.processingQueueCollections {
 				t.upsertPollTime(queueCollection.Level(), time.Time{}, true)
 			}
+			t.emitDebugLogForActiveProcessor("Processed new task notification")
+
 		case <-t.nextPollTimer.FireChan():
 			maxRedispatchQueueSize := t.options.MaxRedispatchQueueSize()
 			if t.redispatcher.Size() > maxRedispatchQueueSize {
@@ -246,14 +263,19 @@ processorPumpLoop:
 
 			levels := make(map[int]struct{})
 			now := t.shard.GetTimeSource().Now()
+			minPollTime := time.Unix(0, math.MaxInt64)
 			for level, pollTime := range t.nextPollTime {
 				if !now.Before(pollTime.time) {
 					levels[level] = struct{}{}
 					delete(t.nextPollTime, level)
+					if pollTime.time.Before(minPollTime) {
+						minPollTime = pollTime.time
+					}
 				} else {
 					t.nextPollTimer.Update(pollTime.time)
 				}
 			}
+			t.metricsScope.RecordTimer(metrics.ProcessingQueueTimerGateLatency, now.Sub(minPollTime))
 
 			t.processQueueCollections(levels)
 		case <-updateAckTimer.C:
@@ -284,12 +306,14 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 		if _, ok := levels[level]; !ok {
 			continue
 		}
+		t.emitDebugLogForActiveProcessor("Processing queue collections")
 
 		activeQueue := queueCollection.ActiveQueue()
 		if activeQueue == nil {
 			// process for this queue collection has finished
 			// it's possible that new queue will be added to this collection later though,
 			// pollTime will be updated after split/merge
+			t.emitDebugLogForActiveProcessor("Active queue is nil")
 			continue
 		}
 
@@ -301,6 +325,7 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 			// no task need to be processed for now, wait for new task notification
 			// note that if taskID for new task is still less than readLevel, the notification
 			// will just be a no-op and there's no DB requests.
+			t.emitDebugLogForActiveProcessor("Processing queue read level is greater or equal to max read level")
 			continue
 		}
 
@@ -357,6 +382,7 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 		} else {
 			newReadLevel = newTransferTaskKey(transferTaskInfos[len(transferTaskInfos)-1].GetTaskID())
 		}
+		t.emitDebugLogForActiveProcessor("Processing queue update read level", tag.ReadLevel(newReadLevel.(transferTaskKey).taskID))
 		queueCollection.AddTasks(tasks, newReadLevel)
 		newActiveQueue := queueCollection.ActiveQueue()
 
@@ -365,8 +391,11 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 			if level != defaultProcessingQueueLevel && taskChFull {
 				t.backoffPollTime(level)
 			} else {
+				t.emitDebugLogForActiveProcessor("Processing queue has more task to process")
 				t.upsertPollTime(level, time.Time{}, true)
 			}
+		} else {
+			t.emitDebugLogForActiveProcessor("Processing queue waiting for new task notification")
 		}
 
 		// else it means we don't have tasks to process for now
