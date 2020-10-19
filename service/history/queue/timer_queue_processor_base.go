@@ -281,7 +281,7 @@ processorPumpLoop:
 			for _, queueCollection := range t.processingQueueCollections {
 				t.upsertPollTime(queueCollection.Level(), newTime)
 			}
-			t.emitDebugLogForActiveProcessor("Processed new task notification")
+			// t.emitDebugLogForActiveProcessor("Processed new task notification")
 
 		case <-splitQueueTimer.C:
 			t.splitQueue()
@@ -400,7 +400,7 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 		} else {
 			// more tasks should be loaded for this processing queue
 			// record the current progress and update the poll time
-			t.emitDebugLogForActiveProcessor("Processing queue has more task to process")
+			// t.emitDebugLogForActiveProcessor("Processing queue has more task to process")
 			if level == defaultProcessingQueueLevel || !taskChFull {
 				t.upsertPollTime(level, time.Time{})
 			} else {
@@ -414,7 +414,7 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 			}
 			newReadLevel = newTimerTaskKey(timerTaskInfos[len(timerTaskInfos)-1].GetVisibilityTimestamp(), 0)
 		}
-		t.emitDebugLogForActiveProcessor("Processing queue update read level", tag.ReadLevel(newReadLevel.(timerTaskKey).visibilityTimestamp.UnixNano()))
+		// t.emitDebugLogForActiveProcessor("Processing queue update read level", tag.ReadLevel(newReadLevel.(timerTaskKey).visibilityTimestamp.UnixNano()))
 
 		queueCollection.AddTasks(tasks, newReadLevel)
 	}
@@ -593,7 +593,11 @@ func (t *timerQueueProcessorBase) upsertPollTime(level int, newPollTime time.Tim
 	}
 
 	if currentPollTime, ok := t.nextPollTime[level]; !ok || newPollTime.Before(currentPollTime) {
-		t.emitDebugLogForActiveProcessor("Processing queue upsert poll time", tag.TaskVisibilityTimestamp(newPollTime.UnixNano()))
+		if !ok {
+			t.emitDebugLogForActiveProcessor("Processing queue upsert poll time", tag.TaskVisibilityTimestamp(newPollTime.UnixNano()))
+		} else {
+			t.emitDebugLogForActiveProcessor("Processing queue upsert poll time", tag.TaskVisibilityTimestamp(newPollTime.UnixNano()), tag.CursorTimestamp(currentPollTime))
+		}
 		t.nextPollTime[level] = newPollTime
 		t.timerGate.Update(newPollTime)
 	}
