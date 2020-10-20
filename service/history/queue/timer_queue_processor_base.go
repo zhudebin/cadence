@@ -479,7 +479,11 @@ func (t *timerQueueProcessorBase) readAndFilterTasks(
 		// only look ahead within the processing queue boundary
 		lookAheadTask, err = t.readLookAheadTask(maxReadLevel, maximumTimerTaskKey)
 		if err != nil {
-			return filteredTasks, nil, nil, nil
+			// fake a lookAheadTask so that another load will be triggered
+			lookAheadTask = &persistence.TimerTaskInfo{
+				VisibilityTimestamp: maxReadLevel.(timerTaskKey).visibilityTimestamp,
+			}
+			return filteredTasks, lookAheadTask, nil, nil
 		}
 	}
 
