@@ -160,7 +160,7 @@ func (t *timerQueueProcessorBase) Start() {
 	t.redispatcher.Start()
 
 	for _, queueCollections := range t.processingQueueCollections {
-		t.upsertPollTime(queueCollections.Level(), time.Time{})
+		t.upsertPollTime(queueCollections.Level(), time.Time{}, "Start()")
 	}
 
 	t.shutdownWG.Add(1)
@@ -193,7 +193,7 @@ func (t *timerQueueProcessorBase) Stop() {
 func (t *timerQueueProcessorBase) emitDebugLogForActiveProcessor(
 	msg string, tags ...tag.Tag,
 ) {
-	if t.shard.GetShardID() < 3000 &&
+	if t.shard.GetShardID() < 1000 &&
 		t.options.MetricScope == metrics.TimerActiveQueueProcessorScope &&
 		t.updateProcessingQueueStates != nil {
 		t.logger.Warn(msg, tags...)
@@ -280,7 +280,7 @@ processorPumpLoop:
 			// no more task to process. For non-default queue, we choose to do periodic polling
 			// in the future, then we don't need to notify them.
 			for _, queueCollection := range t.processingQueueCollections {
-				t.upsertPollTime(queueCollection.Level(), newTime)
+				t.upsertPollTime(queueCollection.Level(), newTime, "newTimerCh")
 			}
 			// t.emitDebugLogForActiveProcessor("Processed new task notification")
 
@@ -302,7 +302,6 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 		if _, ok := levels[level]; !ok {
 			continue
 		}
-		t.emitDebugLogForActiveProcessor("Processing queue collections")
 
 		activeQueue := queueCollection.ActiveQueue()
 		if activeQueue == nil {
@@ -329,7 +328,7 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 
 		if !readLevel.Less(maxReadLevel) {
 			// notify timer gate about the min time
-			t.upsertPollTime(level, readLevel.(timerTaskKey).visibilityTimestamp)
+			t.upsertPollTime(level, readLevel.(timerTaskKey).visibilityTimestamp, "read level")
 			t.emitDebugLogForActiveProcessor("Processing queue read level is greater or equal to max read level", tag.TaskVisibilityTimestamp(readLevel.(timerTaskKey).visibilityTimestamp.UnixNano()))
 			continue
 		}
@@ -338,7 +337,7 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 		if err := t.rateLimiter.Wait(ctx); err != nil {
 			cancel()
 			if level == defaultProcessingQueueLevel {
-				t.upsertPollTime(level, time.Time{})
+				t.upsertPollTime(level, time.Time{}, "retry")
 			} else {
 				t.setupBackoffTimer(level)
 			}
@@ -346,10 +345,14 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 		}
 		cancel()
 
+		t.emitDebugLogForActiveProcessor("Processing queue read tasks",
+			tag.ReadLevel(readLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+			tag.MaxLevel(maxReadLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+		)
 		timerTaskInfos, lookAheadTask, nextPageToken, err := t.readAndFilterTasks(readLevel, maxReadLevel, nextPageToken)
 		if err != nil {
 			t.logger.Error("Processor unable to retrieve tasks", tag.Error(err))
-			t.upsertPollTime(level, time.Time{}) // re-enqueue the event
+			t.upsertPollTime(level, time.Time{}, "retry") // re-enqueue the event
 			continue
 		}
 
@@ -361,7 +364,7 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 		t.upsertPollTime(level, t.shard.GetCurrentTime(t.clusterName).Add(backoff.JitDuration(
 			t.options.MaxPollInterval(),
 			t.options.MaxPollIntervalJitterCoefficient(),
-		)))
+		)), "maxPollInterval")
 
 		tasks := make(map[task.Key]task.Task)
 		taskChFull := false
@@ -389,7 +392,7 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 				// notice that lookAheadTask.VisibilityTimestamp may be larger than shard max read level,
 				// which means new tasks can be generated before that timestamp. This issue is solved by
 				// upsertPollTime whenever there are new tasks
-				t.upsertPollTime(level, lookAheadTask.VisibilityTimestamp)
+				t.upsertPollTime(level, lookAheadTask.VisibilityTimestamp, "lookahead")
 				newReadLevel = minTaskKey(newReadLevel, newTimerTaskKey(lookAheadTask.GetVisibilityTimestamp(), 0))
 				t.emitDebugLogForActiveProcessor("Processing queue waiting for look ahead time", tag.TaskVisibilityTimestamp(lookAheadTask.VisibilityTimestamp.UnixNano()))
 			} else {
@@ -403,7 +406,7 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 			// record the current progress and update the poll time
 			// t.emitDebugLogForActiveProcessor("Processing queue has more task to process")
 			if level == defaultProcessingQueueLevel || !taskChFull {
-				t.upsertPollTime(level, time.Time{})
+				t.upsertPollTime(level, time.Time{}, "more")
 			} else {
 				t.setupBackoffTimer(level)
 			}
@@ -415,7 +418,12 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 			}
 			newReadLevel = newTimerTaskKey(timerTaskInfos[len(timerTaskInfos)-1].GetVisibilityTimestamp(), 0)
 		}
-		// t.emitDebugLogForActiveProcessor("Processing queue update read level", tag.ReadLevel(newReadLevel.(timerTaskKey).visibilityTimestamp.UnixNano()))
+		t.pollTimeLock.Lock()
+		t.emitDebugLogForActiveProcessor("Processing queue process finish",
+			tag.ReadLevel(newReadLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+			tag.TaskVisibilityTimestamp(t.nextPollTime[defaultProcessingQueueLevel].UnixNano()),
+		)
+		t.pollTimeLock.Unlock()
 
 		queueCollection.AddTasks(tasks, newReadLevel)
 	}
@@ -433,14 +441,14 @@ func (t *timerQueueProcessorBase) splitQueue() {
 		},
 	)
 
-	t.splitProcessingQueueCollection(splitPolicy, t.upsertPollTime)
+	t.splitProcessingQueueCollection(splitPolicy, t.upsertPollTimeWithNoMessage)
 }
 
 func (t *timerQueueProcessorBase) handleActionNotification(notification actionNotification) {
 	t.processorBase.handleActionNotification(notification, func() {
 		switch notification.action.ActionType {
 		case ActionTypeReset:
-			t.upsertPollTime(defaultProcessingQueueLevel, time.Time{})
+			t.upsertPollTime(defaultProcessingQueueLevel, time.Time{}, "reset")
 		}
 	})
 }
@@ -482,6 +490,11 @@ func (t *timerQueueProcessorBase) readLookAheadTask(
 	lookAheadStartLevel task.Key,
 	lookAheadMaxLevel task.Key,
 ) (*persistence.TimerTaskInfo, error) {
+	t.emitDebugLogForActiveProcessor("Processing queue read lookahead tasks",
+		tag.ReadLevel(lookAheadStartLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+		tag.MaxLevel(lookAheadMaxLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+	)
+
 	tasks, _, err := t.getTimerTasks(
 		lookAheadStartLevel,
 		lookAheadMaxLevel,
@@ -580,7 +593,11 @@ func (t *timerQueueProcessorBase) notifyNewTimer(
 	}
 }
 
-func (t *timerQueueProcessorBase) upsertPollTime(level int, newPollTime time.Time) {
+func (t *timerQueueProcessorBase) upsertPollTimeWithNoMessage(level int, newPollTime time.Time) {
+	t.upsertPollTime(level, newPollTime, "unknown")
+}
+
+func (t *timerQueueProcessorBase) upsertPollTime(level int, newPollTime time.Time, debugMsg string) {
 	if newPollTime.IsZero() {
 		newPollTime = t.shard.GetTimeSource().Now()
 	}
@@ -595,9 +612,9 @@ func (t *timerQueueProcessorBase) upsertPollTime(level int, newPollTime time.Tim
 
 	if currentPollTime, ok := t.nextPollTime[level]; !ok || newPollTime.Before(currentPollTime) {
 		if !ok {
-			t.emitDebugLogForActiveProcessor("Processing queue upsert poll time", tag.TaskVisibilityTimestamp(newPollTime.UnixNano()))
+			t.emitDebugLogForActiveProcessor("Processing queue upsert poll time by "+debugMsg, tag.TaskVisibilityTimestamp(newPollTime.UnixNano()))
 		} else {
-			t.emitDebugLogForActiveProcessor("Processing queue upsert poll time", tag.TaskVisibilityTimestamp(newPollTime.UnixNano()), tag.CursorTimestamp(currentPollTime))
+			t.emitDebugLogForActiveProcessor("Processing queue upsert poll time by "+debugMsg, tag.TaskVisibilityTimestamp(newPollTime.UnixNano()), tag.CursorTimestamp(currentPollTime))
 		}
 		t.nextPollTime[level] = newPollTime
 		t.timerGate.Update(newPollTime)
