@@ -196,7 +196,7 @@ func (t *timerQueueProcessorBase) emitDebugLogForActiveProcessor(
 	if t.shard.GetShardID() < 3000 &&
 		t.options.MetricScope == metrics.TimerActiveQueueProcessorScope &&
 		t.updateProcessingQueueStates != nil {
-		t.logger.Info(msg, tags...)
+		t.logger.Warn(msg, tags...)
 	}
 }
 
