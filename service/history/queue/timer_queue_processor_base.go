@@ -193,7 +193,7 @@ func (t *timerQueueProcessorBase) Stop() {
 func (t *timerQueueProcessorBase) emitDebugLogForActiveProcessor(
 	msg string, tags ...tag.Tag,
 ) {
-	if t.shard.GetShardID() < 1000 &&
+	if t.shard.GetShardID() < 500 &&
 		t.options.MetricScope == metrics.TimerActiveQueueProcessorScope &&
 		t.updateProcessingQueueStates != nil {
 		t.logger.Warn(msg, tags...)
@@ -490,10 +490,6 @@ func (t *timerQueueProcessorBase) readLookAheadTask(
 	lookAheadStartLevel task.Key,
 	lookAheadMaxLevel task.Key,
 ) (*persistence.TimerTaskInfo, error) {
-	t.emitDebugLogForActiveProcessor("Processing queue read lookahead tasks",
-		tag.ReadLevel(lookAheadStartLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
-		tag.MaxLevel(lookAheadMaxLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
-	)
 
 	tasks, _, err := t.getTimerTasks(
 		lookAheadStartLevel,
@@ -502,12 +498,31 @@ func (t *timerQueueProcessorBase) readLookAheadTask(
 		1,
 	)
 	if err != nil {
+		t.emitDebugLogForActiveProcessor("Processing queue read lookahead tasks, error",
+			tag.ReadLevel(lookAheadStartLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+			tag.MaxLevel(lookAheadMaxLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+			tag.Error(err),
+		)
 		return nil, err
 	}
 
-	if len(tasks) == 1 {
+	if len(tasks) >= 1 {
+		t.emitDebugLogForActiveProcessor("Processing queue read lookahead tasks, success",
+			tag.ReadLevel(lookAheadStartLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+			tag.MaxLevel(lookAheadMaxLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+		)
+		if len(tasks) > 1 {
+			t.emitDebugLogForActiveProcessor("Processing queue read lookahead tasks, got more than one task",
+				tag.ReadLevel(lookAheadStartLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+				tag.MaxLevel(lookAheadMaxLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+			)
+		}
 		return tasks[0], nil
 	}
+	t.emitDebugLogForActiveProcessor("Processing queue read lookahead tasks, fail",
+		tag.ReadLevel(lookAheadStartLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+		tag.MaxLevel(lookAheadMaxLevel.(timerTaskKey).visibilityTimestamp.UnixNano()),
+	)
 	return nil, nil
 }
 
