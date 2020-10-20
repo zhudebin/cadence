@@ -193,7 +193,8 @@ func (t *timerQueueProcessorBase) Stop() {
 func (t *timerQueueProcessorBase) emitDebugLogForActiveProcessor(
 	msg string, tags ...tag.Tag,
 ) {
-	if t.options.MetricScope == metrics.TimerActiveQueueProcessorScope &&
+	if t.shard.GetShardID() < 3000 &&
+		t.options.MetricScope == metrics.TimerActiveQueueProcessorScope &&
 		t.updateProcessingQueueStates != nil {
 		t.logger.Info(msg, tags...)
 	}
