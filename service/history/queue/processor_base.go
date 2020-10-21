@@ -22,6 +22,7 @@ package queue
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +38,8 @@ import (
 
 const (
 	warnPendingTasks = 2000
+
+	maxLogMsgCount = 50
 )
 
 type (
@@ -106,6 +109,10 @@ type (
 		actionNotifyCh chan actionNotification
 
 		processingQueueCollections []ProcessingQueueCollection
+
+		debugLogMessagesLock sync.Mutex
+		debugLogMessages     []string
+		logMessagessHeadIdx  int
 	}
 )
 
@@ -160,7 +167,41 @@ func newProcessorBase(
 			logger,
 			metricsClient,
 		),
+
+		debugLogMessages:    make([]string, maxLogMsgCount, maxLogMsgCount),
+		logMessagessHeadIdx: 0,
 	}
+}
+
+func (p *processorBase) appendDebugLog(
+	msg string,
+	kv map[string]interface{},
+) {
+	p.debugLogMessagesLock.Lock()
+	defer p.debugLogMessagesLock.Unlock()
+
+	p.debugLogMessages[p.logMessagessHeadIdx] = fmt.Sprintf("%v, %s, %v\n", p.shard.GetTimeSource().Now(), msg, kv)
+	p.logMessagessHeadIdx = (p.logMessagessHeadIdx + 1) % maxLogMsgCount
+}
+
+func (p *processorBase) fetchDebugLogs() string {
+	p.debugLogMessagesLock.Lock()
+	defer p.debugLogMessagesLock.Unlock()
+
+	var sb strings.Builder
+	currentIdx := p.logMessagessHeadIdx
+	for i := 0; i != maxLogMsgCount; i++ {
+		currentIdx--
+		if currentIdx < 0 {
+			currentIdx = maxLogMsgCount - 1
+		}
+		if p.debugLogMessages[currentIdx] == "" {
+			break
+		}
+		sb.WriteString(p.debugLogMessages[currentIdx])
+	}
+
+	return sb.String()
 }
 
 func (p *processorBase) updateAckLevel() (bool, error) {

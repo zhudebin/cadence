@@ -148,7 +148,7 @@ func (t *transferQueueProcessorBase) Start() {
 	t.redispatcher.Start()
 
 	for _, queueCollections := range t.processingQueueCollections {
-		t.upsertPollTime(queueCollections.Level(), time.Time{}, true)
+		t.upsertPollTime(queueCollections.Level(), time.Time{}, true, "Start()")
 	}
 
 	t.shutdownWG.Add(1)
@@ -173,29 +173,23 @@ func (t *transferQueueProcessorBase) Stop() {
 	t.redispatcher.Stop()
 }
 
-// func (t *transferQueueProcessorBase) emitDebugLogForActiveProcessor(
-// 	msg string, tags ...tag.Tag,
-// ) {
-// 	if t.options.MetricScope == metrics.TransferActiveQueueProcessorScope &&
-// 		t.updateProcessingQueueStates != nil {
-// 		t.logger.Info(msg, tags...)
-// 	}
-// }
-
 func (t *transferQueueProcessorBase) notifyNewTask() {
-	// t.emitDebugLogForActiveProcessor("Received new task notification")
+	t.appendDebugLog("Received new task notification", nil)
 	select {
 	case t.notifyCh <- struct{}{}:
 	default:
 	}
 }
 
-func (t *transferQueueProcessorBase) upsertPollTime(level int, newPollTime time.Time, changeable bool) {
+func (t *transferQueueProcessorBase) upsertPollTime(level int, newPollTime time.Time, changeable bool, caller string) {
 	if newPollTime.IsZero() {
 		newPollTime = t.shard.GetTimeSource().Now()
 	}
 	if currentPollTime, ok := t.nextPollTime[level]; !ok || (newPollTime.Before(currentPollTime.time) && currentPollTime.changeable) {
-		// t.emitDebugLogForActiveProcessor("Processing queue upsert poll time", tag.TaskVisibilityTimestamp(newPollTime.UnixNano()))
+		t.appendDebugLog("Upsert poll time", map[string]interface{}{
+			"newPollTime": newPollTime,
+			"caller":      caller,
+		})
 		t.nextPollTime[level] = pollTime{
 			time:       newPollTime,
 			changeable: changeable,
@@ -210,7 +204,7 @@ func (t *transferQueueProcessorBase) backoffPollTime(level int) {
 	t.upsertPollTime(level, t.shard.GetTimeSource().Now().Add(backoff.JitDuration(
 		t.options.PollBackoffInterval(),
 		t.options.PollBackoffIntervalJitterCoefficient(),
-	)), false)
+	)), false, "backoffPollTime")
 }
 
 func (t *transferQueueProcessorBase) processorPump() {
@@ -238,9 +232,9 @@ processorPumpLoop:
 			// no more task to process. For non-default queue, we choose to do periodic polling
 			// in the future, then we don't need to notify them.
 			for _, queueCollection := range t.processingQueueCollections {
-				t.upsertPollTime(queueCollection.Level(), time.Time{}, true)
+				t.upsertPollTime(queueCollection.Level(), time.Time{}, true, "notifyCh")
 			}
-			// t.emitDebugLogForActiveProcessor("Processed new task notification")
+			t.appendDebugLog("Processed new task notification", nil)
 
 		case <-t.nextPollTimer.FireChan():
 			maxRedispatchQueueSize := t.options.MaxRedispatchQueueSize()
@@ -306,14 +300,14 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 		if _, ok := levels[level]; !ok {
 			continue
 		}
-		// t.emitDebugLogForActiveProcessor("Processing queue collections")
+		t.appendDebugLog("Processing queue collections", nil)
 
 		activeQueue := queueCollection.ActiveQueue()
 		if activeQueue == nil {
 			// process for this queue collection has finished
 			// it's possible that new queue will be added to this collection later though,
 			// pollTime will be updated after split/merge
-			// t.emitDebugLogForActiveProcessor("Active queue is nil")
+			t.appendDebugLog("Active queue is nil", nil)
 			continue
 		}
 
@@ -326,6 +320,10 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 			// note that if taskID for new task is still less than readLevel, the notification
 			// will just be a no-op and there's no DB requests.
 			// t.emitDebugLogForActiveProcessor("Processing queue read level is greater or equal to max read level")
+			t.appendDebugLog("Processing queue read level is greater or equal to max read level", map[string]interface{}{
+				"readLevel":    readLevel,
+				"maxReadLevel": maxReadLevel,
+			})
 			continue
 		}
 
@@ -335,16 +333,23 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 			if level != defaultProcessingQueueLevel {
 				t.backoffPollTime(level)
 			} else {
-				t.upsertPollTime(level, time.Time{}, true)
+				t.upsertPollTime(level, time.Time{}, true, "ratelimiter")
 			}
 			continue
 		}
 		cancel()
 
+		t.appendDebugLog("Read task", map[string]interface{}{
+			"readLevel":    readLevel,
+			"maxReadLevel": maxReadLevel,
+		})
 		transferTaskInfos, more, err := t.readTasks(readLevel, maxReadLevel)
 		if err != nil {
+			t.appendDebugLog("Failed to read task", map[string]interface{}{
+				"error": err,
+			})
 			t.logger.Error("Processor unable to retrieve tasks", tag.Error(err))
-			t.upsertPollTime(level, time.Time{}, true) // re-enqueue the event
+			t.upsertPollTime(level, time.Time{}, true, "readTaskError") // re-enqueue the event
 			continue
 		}
 
@@ -356,13 +361,25 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 		t.upsertPollTime(level, pollTime.Add(backoff.JitDuration(
 			t.options.MaxPollInterval(),
 			t.options.MaxPollIntervalJitterCoefficient(),
-		)), true)
+		)), true, "maxPollTime")
 
 		tasks := make(map[task.Key]task.Task)
 		taskChFull := false
+		logged := false
 		for _, taskInfo := range transferTaskInfos {
 			if !domainFilter.Filter(taskInfo.GetDomainID()) {
 				continue
+			}
+
+			if !logged &&
+				t.options.MetricScope == metrics.TransferActiveQueueProcessorScope &&
+				t.updateProcessingQueueStates != nil &&
+				t.shard.GetTimeSource().Now().Sub(taskInfo.GetVisibilityTimestamp()) > 30*time.Second {
+				logged = true
+				t.logger.Error("Encounter task with high queue latency",
+					tag.TaskVisibilityTimestamp(taskInfo.GetVisibilityTimestamp().UnixNano()),
+					tag.SysStackTrace(t.fetchDebugLogs()),
+				)
 			}
 
 			task := t.taskInitializer(taskInfo)
@@ -382,7 +399,6 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 		} else {
 			newReadLevel = newTransferTaskKey(transferTaskInfos[len(transferTaskInfos)-1].GetTaskID())
 		}
-		// t.emitDebugLogForActiveProcessor("Processing queue update read level", tag.ReadLevel(newReadLevel.(transferTaskKey).taskID))
 		queueCollection.AddTasks(tasks, newReadLevel)
 		newActiveQueue := queueCollection.ActiveQueue()
 
@@ -391,11 +407,16 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 			if level != defaultProcessingQueueLevel && taskChFull {
 				t.backoffPollTime(level)
 			} else {
-				// t.emitDebugLogForActiveProcessor("Processing queue has more task to process")
-				t.upsertPollTime(level, time.Time{}, true)
+				t.upsertPollTime(level, time.Time{}, true, "moreTask")
 			}
+			t.appendDebugLog("process finish, process more task", map[string]interface{}{
+				"newReadLevel": newReadLevel,
+			})
 		} else {
 			// t.emitDebugLogForActiveProcessor("Processing queue waiting for new task notification")
+			t.appendDebugLog("process finish, wait for new task", map[string]interface{}{
+				"newReadLevel": newReadLevel,
+			})
 		}
 
 		// else it means we don't have tasks to process for now
@@ -441,7 +462,7 @@ func (t *transferQueueProcessorBase) splitQueue() {
 	)
 
 	t.splitProcessingQueueCollection(splitPolicy, func(level int, pollTime time.Time) {
-		t.upsertPollTime(level, pollTime, true)
+		t.upsertPollTime(level, pollTime, true, "split")
 	})
 }
 
@@ -449,7 +470,7 @@ func (t *transferQueueProcessorBase) handleActionNotification(notification actio
 	t.processorBase.handleActionNotification(notification, func() {
 		switch notification.action.ActionType {
 		case ActionTypeReset:
-			t.upsertPollTime(defaultProcessingQueueLevel, time.Time{}, true)
+			t.upsertPollTime(defaultProcessingQueueLevel, time.Time{}, true, "reset")
 		}
 	})
 }
