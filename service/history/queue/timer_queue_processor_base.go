@@ -370,6 +370,11 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 				t.logger.Error("Encounter task with high queue latency",
 					tag.TaskVisibilityTimestamp(taskInfo.GetVisibilityTimestamp().UnixNano()),
 					tag.SysStackTrace(t.fetchDebugLogs()),
+					tag.WorkflowDomainID(taskInfo.GetDomainID()),
+					tag.WorkflowID(taskInfo.GetWorkflowID()),
+					tag.WorkflowRunID(taskInfo.GetRunID()),
+					tag.TaskID(taskInfo.GetTaskID()),
+					tag.TaskType(taskInfo.GetTaskType()),
 				)
 			}
 
