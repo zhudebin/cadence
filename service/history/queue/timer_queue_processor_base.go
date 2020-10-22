@@ -611,7 +611,7 @@ func (t *timerQueueProcessorBase) notifyNewTimer(
 
 func (t *timerQueueProcessorBase) upsertPollTime(level int, newPollTime time.Time, caller string) {
 	if newPollTime.IsZero() {
-		newPollTime = t.shard.GetTimeSource().Now()
+		newPollTime = t.shard.GetCurrentTime(t.clusterName)
 	}
 
 	t.pollTimeLock.Lock()
