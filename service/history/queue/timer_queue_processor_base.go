@@ -364,9 +364,9 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 			}
 
 			if idx == 0 &&
-				t.options.MetricScope == metrics.TimerActiveQueueProcessorScope &&
+				t.options.MetricScope == metrics.TimerStandbyQueueProcessorScope &&
 				t.updateProcessingQueueStates != nil &&
-				t.shard.GetTimeSource().Now().Sub(taskInfo.GetVisibilityTimestamp()) > 30*time.Second {
+				t.shard.GetTimeSource().Now().Sub(taskInfo.GetVisibilityTimestamp()) > 10*time.Hour {
 				t.logger.Error("Encounter task with high queue latency",
 					tag.TaskVisibilityTimestamp(taskInfo.GetVisibilityTimestamp().UnixNano()),
 					tag.SysStackTrace(t.fetchDebugLogs()),
