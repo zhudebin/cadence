@@ -302,6 +302,11 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 			continue
 		}
 
+		t.upsertPollTime(level, t.shard.GetCurrentTime(t.clusterName).Add(backoff.JitDuration(
+			t.options.MaxPollInterval(),
+			t.options.MaxPollIntervalJitterCoefficient(),
+		)), "maxPollInterval")
+
 		var nextPageToken []byte
 		readLevel := activeQueue.State().ReadLevel()
 		maxReadLevel := minTaskKey(activeQueue.State().MaxLevel(), t.updateMaxReadLevel())
@@ -349,12 +354,6 @@ func (t *timerQueueProcessorBase) processQueueCollections(levels map[int]struct{
 			t.upsertPollTime(level, time.Time{}, "readTaskError") // re-enqueue the event
 			continue
 		}
-
-		// TODO: consider remove max poll interval
-		t.upsertPollTime(level, t.shard.GetCurrentTime(t.clusterName).Add(backoff.JitDuration(
-			t.options.MaxPollInterval(),
-			t.options.MaxPollIntervalJitterCoefficient(),
-		)), "maxPollInterval")
 
 		tasks := make(map[task.Key]task.Task)
 		taskChFull := false

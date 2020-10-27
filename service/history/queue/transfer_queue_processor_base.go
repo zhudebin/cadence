@@ -311,6 +311,14 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 			continue
 		}
 
+		pollTime := t.shard.GetTimeSource().Now()
+		t.metricsScope.RecordTimer(metrics.ProcessingQueuePollInterval, pollTime.Sub(t.lastPollTime))
+		t.lastPollTime = pollTime
+		t.upsertPollTime(level, pollTime.Add(backoff.JitDuration(
+			t.options.MaxPollInterval(),
+			t.options.MaxPollIntervalJitterCoefficient(),
+		)), true, "maxPollTime")
+
 		readLevel := activeQueue.State().ReadLevel()
 		maxReadLevel := minTaskKey(activeQueue.State().MaxLevel(), t.updateMaxReadLevel())
 		domainFilter := activeQueue.State().DomainFilter()
@@ -352,16 +360,6 @@ func (t *transferQueueProcessorBase) processQueueCollections(levels map[int]stru
 			t.upsertPollTime(level, time.Time{}, true, "readTaskError") // re-enqueue the event
 			continue
 		}
-
-		pollTime := t.shard.GetTimeSource().Now()
-		t.metricsScope.RecordTimer(metrics.ProcessingQueuePollInterval, pollTime.Sub(t.lastPollTime))
-		t.lastPollTime = pollTime
-
-		// TODO: consider remove max poll interval
-		t.upsertPollTime(level, pollTime.Add(backoff.JitDuration(
-			t.options.MaxPollInterval(),
-			t.options.MaxPollIntervalJitterCoefficient(),
-		)), true, "maxPollTime")
 
 		tasks := make(map[task.Key]task.Task)
 		taskChFull := false
